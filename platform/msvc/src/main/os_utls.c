@@ -91,7 +91,7 @@ _get_path(lua_State* L) {
 		mode_name = "Library/";
 		break;
 	case 'c':
-		mode_name = "Library/Caches";
+		mode_name = "Library/Caches/";
 		break;
 	default:
 		luaL_error(L, "unsupport path mode:%s", mode);
