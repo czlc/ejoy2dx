@@ -14,7 +14,7 @@
 #include <stdio.h>
 
 #ifndef LOGIC_FRAME
-#define LOGIC_FRAME 30
+#define LOGIC_FRAME 60
 #endif
 
 struct WINDOWGAME {
