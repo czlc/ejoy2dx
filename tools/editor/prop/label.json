@@ -1,9 +1,0 @@
-{
-  "common" : [
-    {
-      "type" : "string",
-      "name" : "text",
-      "default" : "\"\""
-    }
-  ]
-}

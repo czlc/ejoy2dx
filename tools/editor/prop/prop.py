@@ -5,21 +5,46 @@ import wx.propgrid as wxpg
 
 import os
 import json
-from particle import ParticleProp
-from label import LabelProp
+import pages
 
-template_path = os.path.join(os.path.dirname(__file__), "particle.json")
-with open(template_path) as f:
-	template = json.loads(f.read())
+class ButtonEditor(wxpg.PyTextCtrlEditor):
+	edit_callback = None
+	def __init__(self):
+		wxpg.PyTextCtrlEditor.__init__(self)
 
-colorMap = {
-	"startColor":("startColorRed", "startColorGreen", "startColorBlue"),\
-	"startColorVariance":("startColorVarianceRed", "startColorVarianceGreen", "startColorVarianceBlue"),\
-	"finishColor":("finishColorRed", "finishColorGreen", "finishColorBlue"),\
-	"finishColorVariance":("finishColorVarianceRed", "finishColorVarianceGreen", "finishColorVarianceBlue"),\
-}
-rootCats = ("Emitter", "ParticleSettings", "ColorSettings")
-emitterTypes = ("Gravity", "Radial")
+	def CreateControls(self, propGrid, property, pos, sz):
+		buttons = wxpg.PGMultiButton(propGrid, sz)
+		buttons.AddButton("+")
+
+		wnd = self.CallSuperMethod("CreateControls",
+		                           propGrid,
+		                           property,
+		                           pos,
+		                           buttons.GetPrimarySize())
+		buttons.Finalize(propGrid, pos);
+		self.buttons = buttons
+
+		return (wnd, buttons)
+
+	def DoCallback(self, prop):
+		client = prop.GetClientData()
+		cb = client.get("btn_callback", None)
+		arg = client.get("btn_callback_arg", None)
+		if cb:
+			if arg != None: cb = cb % arg
+			print("callback:"+cb)
+			ButtonEditor.edit_callback(cb)
+
+	def OnEvent(self, propGrid, prop, ctrl, event):
+		if event.GetEventType() == wx.wxEVT_COMMAND_BUTTON_CLICKED:
+			buttons = self.buttons
+			evtId = event.GetId()
+
+			if evtId == buttons.GetButtonId(0):
+				self.DoCallback(prop)
+				return False  # Return false since value did not change
+
+		return self.CallSuperMethod("OnEvent", propGrid, prop, ctrl, event)
 
 class PropPanel( wx.Panel ):
 
@@ -37,9 +62,12 @@ class PropPanel( wx.Panel ):
 																						# wxpg.PG_AUTO_SORT |
 																						wxpg.PG_TOOLBAR)
 
-		self.particle = ParticleProp(self.pg, self.edit_callback)
-		self.label = LabelProp(self.pg, self.edit_callback)
-		self.current = None
+		pg.RegisterEditor(ButtonEditor)
+		ButtonEditor.edit_callback = edit_callback
+
+		self.page = None
+		self.child_page = None
+		self.current_page = None
 
 		# Show help as tooltips
 		# pg.SetExtraStyle(wxpg.PG_EX_HELP_AS_TOOLTIPS)
@@ -63,23 +91,33 @@ class PropPanel( wx.Panel ):
 		self.SetAutoLayout(True)
 
 	def Clear(self):
-		if self.pg.GetPageCount() > 0:
+		while self.pg.GetPageCount() > 0:
 			self.pg.RemovePage(0)
 
+		self.page = None
+		self.child_page = None
+
 	def SetData(self, data):
-		ope = data["ope"]
+		if data.get("root", False):
+			self.Clear()
+
+		ope = data.get("ope", None)
 		if not ope: return
 
-		self.Clear()
-		self.current = None
-		if ope == "particle_cfg":
-			self.current = self.particle
-		elif ope == "label_cfg":
-			self.current = self.label
-			
-		if self.current:
-			self.current.ShowData(data["data"])
+		cfg = getattr(pages, ope, {})
+
+		self.current_page = None
+		if not self.page:
+			self.page = pages.CommonPage(self.pg, cfg, self.edit_callback)
+			self.current_page = self.page
+		else:
+			if self.child_page:
+				self.pg.RemovePage(1)
+			self.child_page = pages.CommonPage(self.pg, cfg, self.edit_callback)
+			self.current_page = self.child_page
+
+		self.pg.SelectPage(self.current_page.name)
+		self.current_page.ShowData(data["scheme"], data["data"])
 
 	def OnPropGridChange(self, event):
-		if self.current:
-			self.current.OnPropGridChange(event)
+		self.current_page.OnPropGridChange(event)

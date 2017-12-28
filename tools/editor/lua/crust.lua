@@ -15,6 +15,8 @@ particle_source = particle.configs
 package_edit = {} 		  -- user created packages
 sprite_sample = {}			-- editor created sprite
 focus_sprite = nil				-- current focuse sprite
+focus_memory = nil
+focus_sprite_s = nil
 focus_sprite_root = nil	-- the root of the focus sprite
 
 --controller
@@ -40,30 +42,108 @@ local drag_target = nil
 local drag_src_x = nil
 local drag_src_y = nil
 
+local function broadcast_particle(p)
+	local cfg = particle:config(p)
+	local mm = struct.unpack(c_schemes, "particle_config", cfg)
+	if mm.get("emitterMode") == 1 then
+		mm = struct.unpack(c_schemes, "particle_config", cfg, {2})
+	end
+	focus_memory = mm
+	interpreter:broadcast({ope="particle_cfg", data=focus_memory.dump(), scheme=c_schemes["particle_config"]})
+end
+
+local function broadcast_sprite()
+	local unions = {}
+	local spr_type = focus_sprite.type
+	if spr_type == ejoy2dx.SPRITE_TYPE_LABEL then
+		unions[1] = 4
+	elseif spr_type == ejoy2dx.SPRITE_TYPE_ANIMATION then
+		unions[1] = 1
+	elseif spr_type == ejoy2dx.SPRITE_TYPE_PICTURE then
+		unions[1] = 2
+	end
+	focus_memory = struct.unpack(c_schemes, "sprite", focus_sprite.raw_data, unions)
+	local data = focus_memory.dump()
+	local unread = focus_memory.unread_data()
+	if unread then
+		local size = string.len(unread)
+		local unit = string.packsize("L")
+		if size >= unit then
+			local child = table.pack(string.unpack(string.rep("L", size // unit), unread))
+			child[#child] = nil
+			for k, v in ipairs(child) do
+				table.insert(data.data.children, v)
+			end
+		end
+	end
+	interpreter:broadcast({ope="sprite_raw", root=true, scheme=c_schemes["sprite"], data = data})
+end
+
+local function broadcast_label(bin)
+	local scheme = {{name="common", body={{type="string",name="text"}}},
+									{name="pack_label", body=c_schemes["pack_label"]}}
+
+	local data = {common={text=focus_sprite.text}, pack_label=bin.dump()}
+	interpreter:broadcast({ope="pack_label", data=data, scheme=scheme})
+end
+
+local function broadcast_sprite_s()
+	local name, bin = table.unpack(focus_sprite.sprite_s)
+	focus_sprite_s = struct.unpack(c_schemes, name, bin)
+	if name == "pack_label" then
+		broadcast_label(focus_sprite_s)
+	elseif name == "pack_animation" then
+		local unread = focus_sprite_s.unread_data()
+		if unread then
+			local size = string.len(unread)
+			local unit = string.packsize("Ii")
+			if size >= unit then
+				local cnt = (size // unit) + 1
+				local scheme = c_schemes[name]
+				local old = scheme[#scheme].array
+				scheme[#scheme].array = cnt
+				focus_sprite_s = struct.unpack(c_schemes, name, bin)
+				scheme[#scheme].array = old
+			end
+		end
+		interpreter:broadcast({ope=name, scheme=c_schemes[name], data=focus_sprite_s.dump()})
+	else
+		interpreter:broadcast({ope=name, scheme=c_schemes[name], data=focus_sprite_s.dump()})
+	end
+end
+
 local function on_select_sprite(root, spr)
 	if focus_sprite_root == root and focus_sprite == spr then
+		print("ignore select")
 		return
 	end
 	focus_sprite = spr
 	focus_sprite_root = root
+	focus_memory = nil
 
 	bdbox.clear()
-	if not focus_sprite_root or not focus_sprite then return end
+	if not focus_sprite_root or not focus_sprite then 
+		print("cancel select")
+		return
+	end
 	bdbox.show_bd(focus_sprite_root, focus_sprite)
 
 	local p = focus_sprite:get_particle()
 	if p then
-		local cfg = particle:get_para(p)
-		interpreter:broadcast({ope="particle_cfg", data=cfg})
+		broadcast_particle(p)
 		return
 	end
+	
+	broadcast_sprite()
 
-	local sprite_type = focus_sprite.type
-	if sprite_type == ejoy2dx.SPRITE_TYPE_LABEL then
-		interpreter:broadcast({ope="label_cfg", data={text=spr.text}})
-	elseif sprite_type == ejoy2dx.SPRITE_TYPE_PICTURE then
-		print(".............picture")
-	end
+	-- local sprite_type = focus_sprite.type
+	-- if sprite_type == ejoy2dx.SPRITE_TYPE_LABEL then
+	-- 	broadcast_label()
+	-- elseif sprite_type == ejoy2dx.SPRITE_TYPE_PICTURE then
+	-- 	print(".............picture")
+	-- else
+	-- 	broadcast_sprite()
+	-- end
 end
 
 local function on_touch(x,y,what,id)
@@ -144,6 +224,13 @@ function env(...)
 		end
 	end
 	src_env(...)
+end
+
+--scheme
+------------------------------------------------------------------
+c_schemes = {}
+function parse_c_header(code)
+	struct.parse(code, c_schemes)
 end
 
 --pack
@@ -291,8 +378,8 @@ function toggle_child_visible(layer, idx, ...)
 end
 
 function select_sprite(layer, idx, ...)
-	local a, b = get_sprite(layer, idx, ...)
-	on_select_sprite(a, b)
+	local spr, root = get_sprite(layer, idx, ...)
+	on_select_sprite(root, spr)
 end
 
 function move_to_render(tar_layer, layer, idx, ...)
@@ -311,15 +398,55 @@ function move_to_render(tar_layer, layer, idx, ...)
 end
 
 function set_particle_attr(key, val)
-	if not focus_sprite then return end
 	local p = focus_sprite:get_particle()
-	if not p then return end
-	particle:update_para(p, key, val)
+	if p then
+		if type(key) == "table" then
+			for k, v in ipairs(key) do
+				focus_memory.set(v, val[k])
+			end
+		else
+			focus_memory.set(key, val)
+		end
+
+		particle:config(p, focus_memory.pack())
+
+		if key == "emitterMode" then
+			broadcast_particle(p)
+		end
+	end
 end
 
 function set_label_attr(key, val)
-	if not focus_sprite then return end
-	if focus_sprite[key] then
-		focus_sprite[key] = val
+	if key == "common.text" then
+		focus_sprite.text = val
+	else
+		focus_sprite_s.set(string.sub(key, 12), val)
+		focus_sprite.sprite_s = focus_sprite_s.pack()
+	end
+end
+
+function set_sprite_attr(key, val)
+	focus_memory.set(key, val)
+	focus_sprite.raw_data = focus_memory.pack()
+end
+
+function get_sprite_s()
+	broadcast_sprite_s()
+end
+
+function set_sprite_s(key, val)
+	focus_sprite_s.set(key, val)
+	focus_sprite.sprite_s = focus_sprite_s.pack()
+end
+
+function sprite_children(arg)
+	local spr = focus_sprite:fetch_by_index(arg)
+	on_select_sprite(focus_sprite_root, spr)
+end
+
+function sprite_parent()
+	local spr = focus_sprite.parent
+	if spr then
+		on_select_sprite(spr, spr)
 	end
 end
